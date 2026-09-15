@@ -23,7 +23,7 @@ CLUSTER_NAME = "ecom-dataproc-dev"
 PYSPARK_BASE_URI = "gs://dataproc-staging-asia-south1-719421679095-mwznbteb/jobs"
 
 # Use Airflow's logical run date so retries and future backfills remain consistent.
-BATCH_DATE = "{{ ds }}"
+BATCH_DATE = "{{ dag_run.conf.get('batch_date', data_interval_end | ds) }}"
 
 BRONZE_TASK_IDS = (
     "customers_bronze",
