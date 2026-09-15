@@ -1,0 +1,67 @@
+name: Deploy GCP Data Platform Code
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GCP_PROJECT_ID: gcp-ecommerce-de-dev
+  COMPOSER_DAG_URI: gs://us-central1-ecom-airflow-te-d9e4cb62-bucket/dags
+  DATAPROC_JOBS_URI: gs://dataproc-staging-asia-south1-719421679095-mwznbteb/jobs
+
+jobs:
+  validate-and-deploy:
+    name: Validate and deploy code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python syntax
+        run: python -m compileall -q dags spark_jobs scripts data_generator dq
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Deploy Composer support modules
+        run: |
+          gcloud storage cp \
+            scripts/prepare_source_batch.py \
+            scripts/upload_to_landing.py \
+            scripts/validate_source_data.py \
+            "${COMPOSER_DAG_URI}/scripts/"
+          gcloud storage cp \
+            data_generator/__init__.py \
+            data_generator/generator.py \
+            data_generator/schemas.py \
+            "${COMPOSER_DAG_URI}/data_generator/"
+
+      - name: Deploy Bronze PySpark jobs
+        run: gcloud storage cp spark_jobs/bronze/*.py "${DATAPROC_JOBS_URI}/"
+
+      - name: Deploy Silver PySpark jobs
+        run: gcloud storage cp spark_jobs/silver/*.py "${DATAPROC_JOBS_URI}/silver/"
+
+      - name: Deploy Gold PySpark jobs
+        run: gcloud storage cp spark_jobs/gold/*.py "${DATAPROC_JOBS_URI}/gold/"
+
+      - name: Deploy Airflow DAGs
+        run: gcloud storage cp dags/*.py "${COMPOSER_DAG_URI}/"
