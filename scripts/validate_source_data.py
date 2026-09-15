@@ -1,3 +1,4 @@
+import argparse
 import csv
 import sys
 from collections import Counter
@@ -12,6 +13,18 @@ import pyarrow.parquet as pq
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DATA = REPOSITORY_ROOT / "source_data"
+SOURCE_FILES = (
+    "customers.csv",
+    "products.parquet",
+    "orders.csv",
+    "order_items.parquet",
+    "payments.csv",
+    "shipments.parquet",
+    "inventory.csv",
+    "returns.csv",
+    "promotions.parquet",
+    "customer_events.parquet",
+)
 MAX_EXAMPLES = 5
 
 DATASETS = (
@@ -142,13 +155,13 @@ class ValidationReport:
         return passed
 
 
-def read_csv(filename: str) -> list[dict[str, str]]:
-    with (SOURCE_DATA / filename).open(newline="", encoding="utf-8") as source_file:
+def read_csv(source_dir: Path, filename: str) -> list[dict[str, str]]:
+    with (source_dir / filename).open(newline="", encoding="utf-8") as source_file:
         return list(csv.DictReader(source_file))
 
 
-def read_parquet(filename: str) -> tuple[pa.Table, list[dict]]:
-    table = pq.read_table(SOURCE_DATA / filename)
+def read_parquet(source_dir: Path, filename: str) -> tuple[pa.Table, list[dict]]:
+    table = pq.read_table(source_dir / filename)
 
     # Windows may not have an IANA timezone database. Removing only the display
     # timezone preserves the underlying UTC milliseconds used for validation.
@@ -165,21 +178,23 @@ def read_parquet(filename: str) -> tuple[pa.Table, list[dict]]:
     return table, table.to_pylist()
 
 
-def validate() -> bool:
+def validate(source_dir: Path, batch_date: str) -> bool:
+    batch_date = parse_batch_date(batch_date)
+    reference_date = date.fromisoformat(batch_date)
+    reference_datetime = datetime.combine(reference_date, datetime.min.time())
     report = ValidationReport()
-    today = date.today()
 
-    customers = read_csv("customers.csv")
-    _, products = read_parquet("products.parquet")
-    orders = read_csv("orders.csv")
-    _, order_items = read_parquet("order_items.parquet")
-    payments = read_csv("payments.csv")
-    _, shipments = read_parquet("shipments.parquet")
-    inventory = read_csv("inventory.csv")
-    returns = read_csv("returns.csv")
-    _, promotions = read_parquet("promotions.parquet")
+    customers = read_csv(source_dir, "customers.csv")
+    _, products = read_parquet(source_dir, "products.parquet")
+    orders = read_csv(source_dir, "orders.csv")
+    _, order_items = read_parquet(source_dir, "order_items.parquet")
+    payments = read_csv(source_dir, "payments.csv")
+    _, shipments = read_parquet(source_dir, "shipments.parquet")
+    inventory = read_csv(source_dir, "inventory.csv")
+    returns = read_csv(source_dir, "returns.csv")
+    _, promotions = read_parquet(source_dir, "promotions.parquet")
     customer_events_table, customer_events = read_parquet(
-        "customer_events.parquet"
+        source_dir, "customer_events.parquet"
     )
 
     customer_ids = {row["customer_id"] for row in customers}
@@ -530,9 +545,9 @@ def validate() -> bool:
     )
 
     def expected_promotion_status(row: dict) -> str:
-        if today < row["start_date"]:
+        if reference_date < row["start_date"]:
             return "SCHEDULED"
-        if today <= row["end_date"]:
+        if reference_date <= row["end_date"]:
             return "ACTIVE"
         return "EXPIRED"
 
@@ -583,7 +598,7 @@ def validate() -> bool:
         (
             row
             for row in customer_events
-            if row["event_timestamp"] > datetime.utcnow()
+            if row["event_timestamp"] > reference_datetime
         ),
     )
     report.check_records(
@@ -662,9 +677,36 @@ def validate() -> bool:
     return report.print_report()
 
 
-if __name__ == "__main__":
+def parse_batch_date(value: str) -> str:
+    """Require a real calendar date in exactly YYYY-MM-DD format."""
     try:
-        validation_passed = validate()
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "batch_date must be a valid date in YYYY-MM-DD format"
+        ) from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(
+            "batch_date must be a valid date in YYYY-MM-DD format"
+        )
+    return value
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate one batch of source data")
+    parser.add_argument("batch_date", type=parse_batch_date, help="Batch date (YYYY-MM-DD)")
+    args = parser.parse_args()
+    source_dir = SOURCE_DATA / f"batch_date={args.batch_date}"
+    print(f"Validating batch directory: {source_dir}", flush=True)
+
+    missing_files = [source_dir / name for name in SOURCE_FILES if not (source_dir / name).is_file()]
+    if missing_files:
+        for path in missing_files:
+            print(f"Missing source file: {path}")
+        sys.exit(1)
+
+    try:
+        validation_passed = validate(source_dir, args.batch_date)
     except (FileNotFoundError, KeyError, ValueError, pa.ArrowException) as error:
         print(f"SOURCE DATA VALIDATION ERROR: {error}")
         sys.exit(1)
