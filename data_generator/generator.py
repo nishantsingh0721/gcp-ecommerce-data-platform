@@ -1,12 +1,16 @@
 import argparse
 import csv
 import random
+import sys
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data_generator.schemas import (
     CUSTOMER_COLUMNS,
@@ -275,8 +279,8 @@ def generate_phone_number(rng: random.Random, used_numbers: set[str]) -> str:
             return number
 
 
-def generate_signup_date(rng: random.Random) -> str:
-    end_date = date.today()
+def generate_signup_date(rng: random.Random, reference_date: date) -> str:
+    end_date = reference_date
     start_date = end_date - timedelta(days=8 * 365)
     signup_date = start_date + timedelta(days=rng.randint(0, (end_date - start_date).days))
     return signup_date.isoformat()
@@ -286,6 +290,8 @@ def generate_customers(
     row_count: int = CUSTOMER_COUNT,
     output_path: Path = CUSTOMER_OUTPUT_PATH,
     seed: int = RANDOM_SEED,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
     used_phone_numbers: set[str] = set()
@@ -313,7 +319,7 @@ def generate_customers(
                     "city": city,
                     "state": state,
                     "country": "India",
-                    "signup_date": generate_signup_date(rng),
+                    "signup_date": generate_signup_date(rng, reference_date),
                     "customer_status": rng.choices(
                         ("ACTIVE", "INACTIVE"), weights=(85, 15), k=1
                     )[0],
@@ -327,10 +333,12 @@ def generate_products(
     row_count: int = PRODUCT_COUNT,
     output_path: Path = PRODUCT_OUTPUT_PATH,
     seed: int = RANDOM_SEED,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
     categories = tuple(PRODUCT_CATALOG)
-    end_date = date.today()
+    end_date = reference_date
     start_date = end_date - timedelta(days=6 * 365)
     products = []
 
@@ -370,6 +378,8 @@ def generate_orders(
     output_path: Path = ORDER_OUTPUT_PATH,
     customers_path: Path = CUSTOMER_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 2,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
 
@@ -380,8 +390,6 @@ def generate_orders(
         raise ValueError(f"No customer records found in {customers_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    today = date.today()
-
     with output_path.open("w", newline="", encoding="utf-8") as orders_file:
         writer = csv.DictWriter(orders_file, fieldnames=ORDER_COLUMNS)
         writer.writeheader()
@@ -390,7 +398,7 @@ def generate_orders(
             customer = rng.choice(customers)
             signup_date = date.fromisoformat(customer["signup_date"])
             order_date = signup_date + timedelta(
-                days=rng.randint(0, (today - signup_date).days)
+                days=rng.randint(0, (reference_date - signup_date).days)
             )
             order_total = Decimal(rng.randint(19_900, 1_500_000)) / 100
 
@@ -472,6 +480,8 @@ def generate_payments(
     output_path: Path = PAYMENT_OUTPUT_PATH,
     orders_path: Path = ORDER_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 4,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
 
@@ -482,8 +492,6 @@ def generate_payments(
         raise ValueError(f"No order records found in {orders_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    today = date.today()
-
     with output_path.open("w", newline="", encoding="utf-8") as payments_file:
         writer = csv.DictWriter(payments_file, fieldnames=PAYMENT_COLUMNS)
         writer.writeheader()
@@ -491,7 +499,7 @@ def generate_payments(
         for sequence_number, order in enumerate(orders, start=1):
             order_date = date.fromisoformat(order["order_date"])
             payment_date = order_date + timedelta(
-                days=rng.randint(0, min(2, (today - order_date).days))
+                days=rng.randint(0, min(2, (reference_date - order_date).days))
             )
 
             if order["order_status"] == "CANCELLED":
@@ -525,6 +533,8 @@ def generate_shipments(
     output_path: Path = SHIPMENT_OUTPUT_PATH,
     orders_path: Path = ORDER_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 5,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
 
@@ -538,20 +548,19 @@ def generate_shipments(
     if not orders:
         raise ValueError(f"No eligible order records found in {orders_path}")
 
-    today = date.today()
     shipments = []
 
     for sequence_number, order in enumerate(orders, start=1):
         order_date = date.fromisoformat(order["order_date"])
         shipment_date = order_date + timedelta(
-            days=rng.randint(0, min(3, (today - order_date).days))
+            days=rng.randint(0, min(3, (reference_date - order_date).days))
         )
         expected_delivery_date = shipment_date + timedelta(days=rng.randint(2, 7))
 
         if order["order_status"] == "DELIVERED":
             shipment_status = "DELIVERED"
             actual_delivery_date = shipment_date + timedelta(
-                days=rng.randint(0, min(8, (today - shipment_date).days))
+                days=rng.randint(0, min(8, (reference_date - shipment_date).days))
             )
         else:
             shipment_status = rng.choice(OPEN_SHIPMENT_STATUSES)
@@ -582,6 +591,8 @@ def generate_inventory(
     output_path: Path = INVENTORY_OUTPUT_PATH,
     products_path: Path = PRODUCT_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 6,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
     product_ids = pq.read_table(products_path, columns=["product_id"])[
@@ -594,8 +605,6 @@ def generate_inventory(
     warehouse_ids = tuple(WAREHOUSES)
     inventory_records = []
     sequence_number = 1
-    today = date.today()
-
     for product_id in product_ids:
         for warehouse_id in rng.sample(warehouse_ids, k=4):
             inventory_records.append(
@@ -607,7 +616,7 @@ def generate_inventory(
                     "stock_quantity": rng.randint(0, 1_000),
                     "reorder_level": rng.randint(0, 100),
                     "last_updated": (
-                        today - timedelta(days=rng.randint(0, 365))
+                        reference_date - timedelta(days=rng.randint(0, 365))
                     ).isoformat(),
                 }
             )
@@ -634,6 +643,8 @@ def generate_returns(
     order_items_path: Path = ORDER_ITEM_OUTPUT_PATH,
     shipments_path: Path = SHIPMENT_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 7,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
     delivered_shipments = {
@@ -656,7 +667,6 @@ def generate_returns(
             f"cannot generate {row_count} returns"
         )
 
-    today = date.today()
     currency_unit = Decimal("0.01")
     selected_items = rng.sample(eligible_items, k=row_count)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -668,7 +678,7 @@ def generate_returns(
         for sequence_number, item in enumerate(selected_items, start=1):
             delivery_date = delivered_shipments[item["order_id"]]
             return_date = delivery_date + timedelta(
-                days=rng.randint(0, min(30, (today - delivery_date).days))
+                days=rng.randint(0, min(30, (reference_date - delivery_date).days))
             )
             return_quantity = rng.randint(1, item["quantity"])
             return_status = rng.choice(RETURN_STATUSES)
@@ -702,6 +712,8 @@ def generate_promotions(
     output_path: Path = PROMOTION_OUTPUT_PATH,
     products_path: Path = PRODUCT_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 8,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
     products = pq.read_table(
@@ -712,7 +724,6 @@ def generate_promotions(
     if not products:
         raise ValueError(f"No product records found in {products_path}")
 
-    today = date.today()
     promotions = []
 
     for sequence_number in range(1, row_count + 1):
@@ -727,18 +738,18 @@ def generate_promotions(
 
         lifecycle = rng.choice(("SCHEDULED", "ACTIVE", "EXPIRED"))
         if lifecycle == "SCHEDULED":
-            start_date = today + timedelta(days=rng.randint(1, 90))
+            start_date = reference_date + timedelta(days=rng.randint(1, 90))
             end_date = start_date + timedelta(days=rng.randint(3, 30))
         elif lifecycle == "ACTIVE":
-            start_date = today - timedelta(days=rng.randint(0, 15))
-            end_date = today + timedelta(days=rng.randint(0, 30))
+            start_date = reference_date - timedelta(days=rng.randint(0, 15))
+            end_date = reference_date + timedelta(days=rng.randint(0, 30))
         else:
-            end_date = today - timedelta(days=rng.randint(1, 365))
+            end_date = reference_date - timedelta(days=rng.randint(1, 365))
             start_date = end_date - timedelta(days=rng.randint(3, 30))
 
-        if today < start_date:
+        if reference_date < start_date:
             promotion_status = "SCHEDULED"
-        elif today <= end_date:
+        elif reference_date <= end_date:
             promotion_status = "ACTIVE"
         else:
             promotion_status = "EXPIRED"
@@ -769,6 +780,8 @@ def generate_customer_events(
     customers_path: Path = CUSTOMER_OUTPUT_PATH,
     products_path: Path = PRODUCT_OUTPUT_PATH,
     seed: int = RANDOM_SEED + 9,
+    *,
+    reference_date: date,
 ) -> Path:
     rng = random.Random(seed)
 
@@ -793,9 +806,9 @@ def generate_customer_events(
     if events_per_session * CUSTOMER_EVENT_SESSION_COUNT != CUSTOMER_EVENT_COUNT:
         raise ValueError("Customer-event count must divide evenly across sessions")
 
-    now = datetime.now(timezone.utc)
-    historical_start = now - timedelta(days=2 * 365)
-    latest_session_start = now - timedelta(minutes=30)
+    reference_datetime = datetime.combine(reference_date, time.min, tzinfo=timezone.utc)
+    historical_start = reference_datetime - timedelta(days=2 * 365)
+    latest_session_start = reference_datetime - timedelta(minutes=30)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     event_batch = []
     event_number = 1
@@ -816,9 +829,12 @@ def generate_customer_events(
             available_seconds = int(
                 (latest_session_start - earliest_session_start).total_seconds()
             )
-            session_start = earliest_session_start + timedelta(
-                seconds=rng.randint(0, max(0, available_seconds))
-            )
+            if available_seconds < 0:
+                session_start = reference_datetime
+            else:
+                session_start = earliest_session_start + timedelta(
+                    seconds=rng.randint(0, available_seconds)
+                )
             session_id = f"SESSION{session_number:07d}"
             session_product_id = rng.choice(product_ids)
             device_type = rng.choices(DEVICE_TYPES, weights=(65, 28, 7), k=1)[0]
@@ -852,7 +868,10 @@ def generate_customer_events(
                     }
                 )
                 event_number += 1
-                event_timestamp += timedelta(seconds=rng.randint(5, 300))
+                event_timestamp = min(
+                    event_timestamp + timedelta(seconds=rng.randint(5, 300)),
+                    reference_datetime,
+                )
 
                 if len(event_batch) == 10_000:
                     parquet_writer.write_table(
@@ -866,6 +885,110 @@ def generate_customer_events(
             )
 
     return output_path
+
+
+def parse_batch_date(value: str) -> str:
+    """Validate a calendar date in exactly YYYY-MM-DD format."""
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("batch_date must be a valid date in YYYY-MM-DD format") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError("batch_date must be a valid date in YYYY-MM-DD format")
+    return value
+
+
+def generate_source_batch(
+    batch_date: str,
+    dataset: str | None = None,
+    output_base_dir: Path | None = None,
+) -> Path:
+    """Generate one complete batch, or one selected dataset, in dependency order."""
+    batch_date = parse_batch_date(batch_date)
+    reference_date = date.fromisoformat(batch_date)
+    if output_base_dir is None:
+        output_base_dir = Path(__file__).resolve().parents[1] / "source_data"
+    output_dir = Path(output_base_dir) / f"batch_date={batch_date}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # Generate dependencies first when no individual dataset is selected.
+    datasets = (
+        "customers", "products", "orders", "order_items", "payments",
+        "shipments", "inventory", "returns", "promotions", "customer_events",
+    )
+    for dataset_name in (dataset,) if dataset else datasets:
+        if dataset_name == "products":
+            output_path = generate_products(
+                output_path=output_dir / PRODUCT_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {PRODUCT_COUNT:,} products at {output_path}")
+        elif dataset_name == "orders":
+            output_path = generate_orders(
+                output_path=output_dir / ORDER_OUTPUT_PATH.name,
+                customers_path=output_dir / CUSTOMER_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {ORDER_COUNT:,} orders at {output_path}")
+        elif dataset_name == "order_items":
+            output_path = generate_order_items(
+                output_path=output_dir / ORDER_ITEM_OUTPUT_PATH.name,
+                orders_path=output_dir / ORDER_OUTPUT_PATH.name,
+                products_path=output_dir / PRODUCT_OUTPUT_PATH.name,
+            )
+            print(f"Generated {ORDER_ITEM_COUNT:,} order items at {output_path}")
+        elif dataset_name == "payments":
+            output_path = generate_payments(
+                output_path=output_dir / PAYMENT_OUTPUT_PATH.name,
+                orders_path=output_dir / ORDER_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {PAYMENT_COUNT:,} payments at {output_path}")
+        elif dataset_name == "shipments":
+            output_path = generate_shipments(
+                output_path=output_dir / SHIPMENT_OUTPUT_PATH.name,
+                orders_path=output_dir / ORDER_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated shipments at {output_path}")
+        elif dataset_name == "inventory":
+            output_path = generate_inventory(
+                output_path=output_dir / INVENTORY_OUTPUT_PATH.name,
+                products_path=output_dir / PRODUCT_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {INVENTORY_COUNT:,} inventory records at {output_path}")
+        elif dataset_name == "returns":
+            output_path = generate_returns(
+                output_path=output_dir / RETURN_OUTPUT_PATH.name,
+                order_items_path=output_dir / ORDER_ITEM_OUTPUT_PATH.name,
+                shipments_path=output_dir / SHIPMENT_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {RETURN_COUNT:,} returns at {output_path}")
+        elif dataset_name == "promotions":
+            output_path = generate_promotions(
+                output_path=output_dir / PROMOTION_OUTPUT_PATH.name,
+                products_path=output_dir / PRODUCT_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {PROMOTION_COUNT:,} promotions at {output_path}")
+        elif dataset_name == "customer_events":
+            output_path = generate_customer_events(
+                output_path=output_dir / CUSTOMER_EVENT_OUTPUT_PATH.name,
+                customers_path=output_dir / CUSTOMER_OUTPUT_PATH.name,
+                products_path=output_dir / PRODUCT_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {CUSTOMER_EVENT_COUNT:,} customer events at {output_path}")
+        else:
+            output_path = generate_customers(
+                output_path=output_dir / CUSTOMER_OUTPUT_PATH.name,
+                reference_date=reference_date,
+            )
+            print(f"Generated {CUSTOMER_COUNT:,} customers at {output_path}")
+
+    print(f"Final output directory: {output_dir}")
+    return output_dir
 
 
 def main() -> None:
@@ -885,40 +1008,14 @@ def main() -> None:
             "promotions",
             "customer_events",
         ),
-        default="customers",
+        default=None,
+    )
+    parser.add_argument(
+        "--batch-date", required=True, type=parse_batch_date,
+        help="Batch output date (YYYY-MM-DD)",
     )
     args = parser.parse_args()
-
-    if args.dataset == "products":
-        output_path = generate_products()
-        print(f"Generated {PRODUCT_COUNT:,} products at {output_path}")
-    elif args.dataset == "orders":
-        output_path = generate_orders()
-        print(f"Generated {ORDER_COUNT:,} orders at {output_path}")
-    elif args.dataset == "order_items":
-        output_path = generate_order_items()
-        print(f"Generated {ORDER_ITEM_COUNT:,} order items at {output_path}")
-    elif args.dataset == "payments":
-        output_path = generate_payments()
-        print(f"Generated {PAYMENT_COUNT:,} payments at {output_path}")
-    elif args.dataset == "shipments":
-        output_path = generate_shipments()
-        print(f"Generated shipments at {output_path}")
-    elif args.dataset == "inventory":
-        output_path = generate_inventory()
-        print(f"Generated {INVENTORY_COUNT:,} inventory records at {output_path}")
-    elif args.dataset == "returns":
-        output_path = generate_returns()
-        print(f"Generated {RETURN_COUNT:,} returns at {output_path}")
-    elif args.dataset == "promotions":
-        output_path = generate_promotions()
-        print(f"Generated {PROMOTION_COUNT:,} promotions at {output_path}")
-    elif args.dataset == "customer_events":
-        output_path = generate_customer_events()
-        print(f"Generated {CUSTOMER_EVENT_COUNT:,} customer events at {output_path}")
-    else:
-        output_path = generate_customers()
-        print(f"Generated {CUSTOMER_COUNT:,} customers at {output_path}")
+    generate_source_batch(args.batch_date, args.dataset)
 
 
 if __name__ == "__main__":
